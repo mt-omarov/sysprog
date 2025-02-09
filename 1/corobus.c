@@ -13,8 +13,6 @@ struct data_vector {
 	size_t capacity;
 };
 
-#if 0 /* Uncomment this if want to use */
-
 /** Append @a count messages in @a data to the end of the vector. */
 static void
 data_vector_append_many(struct data_vector *vector,
@@ -60,8 +58,6 @@ data_vector_pop_first(struct data_vector *vector)
 	return data;
 }
 
-#endif
-
 /**
  * One coroutine waiting to be woken up in a list of other
  * suspended coros.
@@ -75,8 +71,6 @@ struct wakeup_entry {
 struct wakeup_queue {
 	struct rlist coros;
 };
-
-#if 0 /* Uncomment this if want to use */
 
 /** Suspend the current coroutine until it is woken up. */
 static void
@@ -99,8 +93,6 @@ wakeup_queue_wakeup_first(struct wakeup_queue *queue)
 		struct wakeup_entry, base);
 	coro_wakeup(entry->coro);
 }
-
-#endif
 
 struct coro_bus_channel {
 	/** Channel max capacity. */
@@ -135,43 +127,115 @@ coro_bus_errno_set(enum coro_bus_error_code err)
 struct coro_bus *
 coro_bus_new(void)
 {
-	/* IMPLEMENT THIS FUNCTION */
-	coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-	return NULL;
+    struct coro_bus *bus = malloc(sizeof(struct coro_bus));
+    if (!bus) {
+        return NULL;
+    }
+    bus->channel_count = 0;
+    bus->channels = NULL;
+
+    coro_bus_errno_set(CORO_BUS_ERR_NONE);
+    return bus;
 }
 
 void
 coro_bus_delete(struct coro_bus *bus)
 {
-	/* IMPLEMENT THIS FUNCTION */
-	(void)bus;
+    if (!bus) {
+        return;
+    }
+
+    for (int channel_i = 0; channel_i < bus->channel_count; ++channel_i) {
+        if (!bus->channels[channel_i]) {
+            continue;
+        }
+        assert(rlist_empty(&bus->channels[channel_i]->send_queue.coros));
+        assert(rlist_empty(&bus->channels[channel_i]->recv_queue.coros));
+        free(bus->channels[channel_i]->data.data);
+        free(bus->channels[channel_i]);
+    }
+    free(bus->channels);
+    free(bus);
+
+    coro_bus_errno_set(CORO_BUS_ERR_NONE);
 }
 
 int
 coro_bus_channel_open(struct coro_bus *bus, size_t size_limit)
 {
-	/* IMPLEMENT THIS FUNCTION */
-	(void)bus;
-	(void)size_limit;
-	coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-	return -1;
+    if (!bus) {
+        return -1;
+    }
+
+    struct coro_bus_channel *channel = malloc(sizeof(struct coro_bus_channel));
+    if (!channel) {
+        return -1;
+    }
+    channel->size_limit = size_limit;
+    channel->data.data = NULL;
+    channel->data.size = 0;
+    channel->data.capacity = 0;
+    rlist_create(&channel->send_queue.coros);
+    rlist_create(&channel->recv_queue.coros);
+
+    // reuse the first deleted channel
+    for (int channel_i = 0; channel_i < bus->channel_count; ++channel_i) {
+        if (!bus->channels[channel_i]) {
+            bus->channels[channel_i] = channel;
+            return channel_i;
+        }
+    }
+
+    // add new channel to the storage
+    struct coro_bus_channel **buf = realloc(
+        bus->channels,
+        (bus->channel_count + 1) * sizeof(struct coro_bus_channel *)
+    );
+
+    if (!buf) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        free(channel);
+        return -1;
+    }
+
+    buf[bus->channel_count] = channel;
+    bus->channels = buf;
+
+    coro_bus_errno_set(CORO_BUS_ERR_NONE);
+    return bus->channel_count++;
 }
 
 void
 coro_bus_channel_close(struct coro_bus *bus, int channel)
 {
-	/* IMPLEMENT THIS FUNCTION */
-	(void)bus;
-	(void)channel;
+    if (
+        !bus ||
+        !bus->channels || channel < 0 ||
+        channel >= bus->channel_count ||
+        !bus->channels[channel]
+    ) {
+        return;
+    }
+
+    while (!rlist_empty(&bus->channels[channel]->recv_queue.coros)) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        wakeup_queue_wakeup_first(&bus->channels[channel]->recv_queue);
+        rlist_shift(&bus->channels[channel]->recv_queue.coros);
+    }
+    while (!rlist_empty(&bus->channels[channel]->send_queue.coros)) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        wakeup_queue_wakeup_first(&bus->channels[channel]->send_queue);
+        rlist_shift(&bus->channels[channel]->send_queue.coros);
+    }
+
+    free(bus->channels[channel]->data.data);
+    free(bus->channels[channel]);
+    bus->channels[channel] = NULL;
 }
 
 int
 coro_bus_send(struct coro_bus *bus, int channel, unsigned data)
 {
-	/* IMPLEMENT THIS FUNCTION */
-	(void)bus;
-	(void)channel;
-	(void)data;
 	/*
 	 * Try sending in a loop, until success. If error, then
 	 * check which one is that. If 'wouldblock', then suspend
@@ -183,46 +247,113 @@ coro_bus_send(struct coro_bus *bus, int channel, unsigned data)
 	 * waiting, they would then wake each other up one by one
 	 * as lone as there is still space.
 	 */
-	coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-	return -1;
+
+    if (
+        !bus ||
+        !bus->channels || channel < 0 ||
+        channel >= bus->channel_count ||
+        !bus->channels[channel]
+    ) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    struct coro_bus_channel *ch = bus->channels[channel];
+    while (ch->data.size >= ch->size_limit) {
+        wakeup_queue_suspend_this(&ch->send_queue);
+        if (!bus->channels[channel]) {
+    	    coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+            return -1;
+        }
+    }
+
+    data_vector_append(&ch->data, data);
+    wakeup_queue_wakeup_first(&ch->recv_queue);
+
+    return 0;
 }
 
 int
 coro_bus_try_send(struct coro_bus *bus, int channel, unsigned data)
 {
-	/* IMPLEMENT THIS FUNCTION */
-	(void)bus;
-	(void)channel;
-	(void)data;
 	/*
 	 * Append data if has space. Otherwise 'wouldblock' error.
 	 * Wakeup the first coro in the recv-queue! To let it know
 	 * there is data.
 	 */
-	coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-	return -1;
+    if (
+        !bus ||
+        !bus->channels || channel < 0 ||
+        channel >= bus->channel_count ||
+        !bus->channels[channel]
+    ) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    struct coro_bus_channel *ch = bus->channels[channel];
+    if (ch->data.size >= ch->size_limit) {
+        coro_bus_errno_set(CORO_BUS_ERR_WOULD_BLOCK);
+        return -1;
+    }
+
+    data_vector_append(&ch->data, data);
+    wakeup_queue_wakeup_first(&ch->recv_queue);
+
+    return 0;
 }
 
 int
 coro_bus_recv(struct coro_bus *bus, int channel, unsigned *data)
 {
-	/* IMPLEMENT THIS FUNCTION */
-	(void)bus;
-	(void)channel;
-	(void)data;
-	coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-	return -1;
+    if (
+        !bus ||
+        !bus->channels || channel < 0 ||
+        channel >= bus->channel_count ||
+        !bus->channels[channel]
+    ) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    struct coro_bus_channel *ch = bus->channels[channel];
+    while (ch->data.size == 0) {
+        wakeup_queue_suspend_this(&ch->recv_queue);
+        if (!bus->channels[channel]) {
+    	    coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+            return -1;
+        }
+    }
+
+    *data = data_vector_pop_first(&ch->data);
+    wakeup_queue_wakeup_first(&ch->send_queue);
+
+    return 0;
 }
 
 int
 coro_bus_try_recv(struct coro_bus *bus, int channel, unsigned *data)
 {
-	/* IMPLEMENT THIS FUNCTION */
-	(void)bus;
-	(void)channel;
-	(void)data;
-	coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-	return -1;
+    if (
+        !bus ||
+        !bus->channels || channel < 0 ||
+        channel >= bus->channel_count ||
+        !bus->channels[channel]
+    ) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    struct coro_bus_channel *ch = bus->channels[channel];
+    if (ch->data.size == 0) {
+        coro_bus_errno_set(CORO_BUS_ERR_WOULD_BLOCK);
+        return -1;
+    }
+
+    *data = data_vector_pop_first(&ch->data);
+    wakeup_queue_wakeup_first(&ch->send_queue);
+
+    return 0;
 }
 
 
