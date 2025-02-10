@@ -362,21 +362,154 @@ coro_bus_try_recv(struct coro_bus *bus, int channel, unsigned *data)
 int
 coro_bus_broadcast(struct coro_bus *bus, unsigned data)
 {
-	/* IMPLEMENT THIS FUNCTION */
-	(void)bus;
-	(void)data;
-	coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-	return -1;
+    if (!bus || !bus->channels || bus->channel_count <= 0) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    int current_channel_count = bus->channel_count;
+    bool *channel_existed = malloc(current_channel_count * sizeof(bool));
+    memset(channel_existed, 0, current_channel_count * sizeof(bool));
+    int existing_channel_count = current_channel_count;
+
+    bool sleeped = false;
+    for (int channel_i = 0; channel_i < bus->channel_count; ++channel_i) {
+        struct coro_bus_channel *channel = bus->channels[channel_i];
+
+        if (!channel && !channel_existed[channel_i]) {
+            --existing_channel_count;
+            continue;
+        } else if (!channel && channel_existed[channel_i]) { // channel existed, but now is missing
+            free(channel_existed);
+            coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+            return -1;
+        }
+
+        /*
+         * even if channel was missing,
+         * but after sleeping was created,
+         * then coroutine must send the message to it.
+         */
+        if (!channel_existed[channel_i]) {
+            ++existing_channel_count;
+        }
+        channel_existed[channel_i] = 1; // channel exists
+
+        while (channel->data.size >= channel->size_limit) {
+            wakeup_queue_suspend_this(&channel->send_queue);
+
+            if (
+                !bus || !bus->channels ||
+                !bus->channels[channel_i] ||
+                bus->channel_count <= 0
+            ) {
+                free(channel_existed);
+                coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+                return -1;
+            } else if (current_channel_count != bus->channel_count) {
+                bool *tmp = realloc(channel_existed, bus->channel_count * sizeof(bool));
+                if (!tmp) {
+                    free(channel_existed);
+                    return -1;
+                }
+                channel_existed = tmp;
+
+                // set new channels as potential holes
+                if (current_channel_count < bus->channel_count) {
+                    memset(
+                        channel_existed + current_channel_count,
+                        0,
+                        (bus->channel_count - current_channel_count) * sizeof(bool)
+                    );
+                }
+                // update channel count
+                current_channel_count = bus->channel_count;
+            }
+            sleeped = true;
+        }
+
+        if (sleeped) { // if sleeped, check previous channels once more
+            channel_i = -1;
+            existing_channel_count = current_channel_count;
+            sleeped = false;
+        }
+    }
+
+    if (!existing_channel_count) {
+        free(channel_existed);
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    // all channels are free, send messages in loop
+    for (int channel_i = 0; channel_i < bus->channel_count; ++channel_i) {
+        struct coro_bus_channel *channel = bus->channels[channel_i];
+        if (!channel && channel_existed[channel_i]) {
+            free(channel_existed);
+            coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+            return -1;
+        } else if (!channel) {
+            continue;
+        }
+
+        coro_bus_try_send(bus, channel_i, data);
+    }
+
+    free(channel_existed);
+
+    return 0;
 }
 
 int
-coro_bus_try_broadcast(struct coro_bus *bus, unsigned data)
-{
-	/* IMPLEMENT THIS FUNCTION */
-	(void)bus;
-	(void)data;
-	coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-	return -1;
+coro_bus_try_broadcast(struct coro_bus *bus, unsigned data) {
+    if (!bus || !bus->channels) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    bool *channel_existed = malloc(bus->channel_count * sizeof(bool));
+    memset(channel_existed, 0, bus->channel_count * sizeof(bool));
+    int existing_channel_count = bus->channel_count;
+
+    for (int channel_i = 0; channel_i < bus->channel_count; ++channel_i) {
+        struct coro_bus_channel *channel = bus->channels[channel_i];
+
+        if (!channel) {
+            --existing_channel_count;
+            continue;
+        }
+        channel_existed[channel_i] = 1; // channel exists
+
+        if (channel->data.size >= channel->size_limit) {
+            free(channel_existed);
+            return -1;
+        }
+    }
+
+    if (!existing_channel_count) {
+        free(channel_existed);
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    for (int channel_i = 0; channel_i < bus->channel_count; ++channel_i) {
+        struct coro_bus_channel *channel = bus->channels[channel_i];
+
+        // if channel existed, but now is missing, then return with error
+        if (!channel && channel_existed[channel_i]) {
+            free(channel_existed);
+            coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+            return -1;
+        } else if (!channel) {
+            continue; // skip holes
+        }
+
+        coro_bus_try_send(bus, channel_i, data);
+    }
+
+    free(channel_existed);
+
+    return 0;
 }
 
 #endif
