@@ -407,18 +407,21 @@ coro_bus_broadcast(struct coro_bus *bus, unsigned data)
         }
         channel_existed[channel_i] = 1; // channel exists
 
+        // check if channel is full and wait until it's release
         while (channel->data.size >= channel->size_limit) {
             wakeup_queue_suspend_this(&channel->send_queue);
 
             if (
                 !bus || !bus->channels ||
-                !bus->channels[channel_i] ||
                 bus->channel_count <= 0
             ) {
                 free(channel_existed);
-                coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
-                return -1;
-            } else if (current_channel_count != bus->channel_count) {
+                return 0;
+            } else if (!bus->channels[channel_i]) {
+                channel_existed[channel_i] = 0; // channel was dropped before the first sleep
+            }
+
+            if (current_channel_count != bus->channel_count) {
                 bool *tmp = realloc(channel_existed, bus->channel_count * sizeof(bool));
                 if (!tmp) {
                     free(channel_existed);
