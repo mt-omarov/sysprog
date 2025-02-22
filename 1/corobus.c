@@ -534,49 +534,145 @@ coro_bus_try_broadcast(struct coro_bus *bus, unsigned data) {
 int
 coro_bus_send_v(struct coro_bus *bus, int channel, const unsigned *data, unsigned count)
 {
-	/* IMPLEMENT THIS FUNCTION */
-	(void)bus;
-	(void)channel;
-	(void)data;
-	(void)count;
-	coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-	return -1;
+    if (
+        !bus ||
+        !bus->channels || channel < 0 ||
+        channel >= bus->channel_count ||
+        !bus->channels[channel]
+    ) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    struct coro_bus_channel *ch = bus->channels[channel];
+    while (ch->data.size >= ch->size_limit) {
+        wakeup_queue_suspend_this(&ch->send_queue);
+        if (bus->channels[channel] != ch) {
+            coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+            return -1;
+        }
+    }
+
+    unsigned space = ch->size_limit - ch->data.size;
+    int result = (space > count) ? count : space;
+
+    for (int i = 0; i < result; ++i) {
+        data_vector_append(&ch->data, data[i]);
+    }
+
+    wakeup_queue_wakeup_first(&ch->recv_queue);
+
+    return result;
 }
 
 int
 coro_bus_try_send_v(struct coro_bus *bus, int channel, const unsigned *data, unsigned count)
 {
-	/* IMPLEMENT THIS FUNCTION */
-	(void)bus;
-	(void)channel;
-	(void)data;
-	(void)count;
-	coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-	return -1;
+    if (
+        !bus ||
+        !bus->channels || channel < 0 ||
+        channel >= bus->channel_count ||
+        !bus->channels[channel]
+    ) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    if (!count) {
+        return 0;
+    }
+
+    struct coro_bus_channel *ch = bus->channels[channel];
+    if (ch->data.size >= ch->size_limit) {
+        coro_bus_errno_set(CORO_BUS_ERR_WOULD_BLOCK);
+        return -1;
+    }
+
+    unsigned space = ch->size_limit - ch->data.size;
+    int result = (space > count) ? count : space;
+
+    for (int i = 0; i < result; ++i) {
+        data_vector_append(&ch->data, data[i]);
+    }
+
+    wakeup_queue_wakeup_first(&ch->recv_queue);
+
+    return result;
 }
 
 int
 coro_bus_recv_v(struct coro_bus *bus, int channel, unsigned *data, unsigned capacity)
 {
-	/* IMPLEMENT THIS FUNCTION */
-	(void)bus;
-	(void)channel;
-	(void)data;
-	(void)capacity;
-	coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-	return -1;
+    if (
+        !bus ||
+        !bus->channels || channel < 0 ||
+        channel >= bus->channel_count ||
+        !bus->channels[channel]
+    ) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    if (!data || !capacity) {
+        return 0;
+    }
+
+    struct coro_bus_channel *ch = bus->channels[channel];
+    while (ch->data.size == 0) {
+        wakeup_queue_suspend_this(&ch->recv_queue);
+        if (bus->channels[channel] != ch) {
+            coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+            return -1;
+        }
+    }
+
+    unsigned space = ch->data.size;
+    int result = (space > capacity) ? capacity : space;
+
+    for (int i = 0; i < result; ++i) {
+        data[i] = data_vector_pop_first(&ch->data);
+    }
+
+    wakeup_queue_wakeup_first(&ch->send_queue);
+    wakeup_queue_wakeup_first(&ch->recv_queue);
+
+    return result;
 }
 
 int
 coro_bus_try_recv_v(struct coro_bus *bus, int channel, unsigned *data, unsigned capacity)
 {
-	/* IMPLEMENT THIS FUNCTION */
-	(void)bus;
-	(void)channel;
-	(void)data;
-	(void)capacity;
-	coro_bus_errno_set(CORO_BUS_ERR_NOT_IMPLEMENTED);
-	return -1;
+    if (
+        !bus ||
+        !bus->channels || channel < 0 ||
+        channel >= bus->channel_count ||
+        !bus->channels[channel]
+    ) {
+        coro_bus_errno_set(CORO_BUS_ERR_NO_CHANNEL);
+        return -1;
+    }
+
+    if (!data || !capacity) {
+        return 0;
+    }
+
+    struct coro_bus_channel *ch = bus->channels[channel];
+    if (ch->data.size == 0) {
+        coro_bus_errno_set(CORO_BUS_ERR_WOULD_BLOCK);
+        return -1;
+    }
+
+    unsigned space = ch->data.size;
+    int result = (space > capacity) ? capacity : space;
+
+    for (int i = 0; i < result; ++i) {
+        data[i] = data_vector_pop_first(&ch->data);
+    }
+
+    wakeup_queue_wakeup_first(&ch->send_queue);
+    wakeup_queue_wakeup_first(&ch->recv_queue);
+
+    return result;
 }
 
 #endif
