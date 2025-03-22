@@ -525,4 +525,19 @@ ufs_resize(int fd, size_t new_size)
 void
 ufs_destroy(void)
 {
+    if (file_descriptors != NULL) {
+        for (
+            int fd = 0;
+            fd < file_descriptor_capacity && file_descriptor_count > 0;
+            ++fd
+        ) {
+            if (file_descriptors[fd] != NULL) {
+                ufs_close(fd);
+            }
+        }
+    }
+
+    for (struct file *f = file_list; f != NULL; f = f->next) {
+        delete_file(&f);
+    }
 }
