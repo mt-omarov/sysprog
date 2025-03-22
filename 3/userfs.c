@@ -163,7 +163,6 @@ delete_file(struct file **fp) {
         free(b->memory);
         free(b);
         b = next;
-
     }
 
     if (f->name != NULL) {
@@ -181,8 +180,12 @@ create_descriptor(struct file *f, enum open_flags flags) {
     }
 
     if (file_descriptor_count == file_descriptor_capacity) {
+        int old_capacity = file_descriptor_capacity;
+
         file_descriptor_capacity = get_upper_sqr(file_descriptor_capacity * 2);
         file_descriptors = realloc(file_descriptors, file_descriptor_capacity * sizeof(void *));
+
+        memset(file_descriptors + old_capacity, 0, (file_descriptor_capacity - old_capacity) * sizeof(void *));
     }
 
     /* Attempt to reuse deleted descriptors */
@@ -281,7 +284,7 @@ static void
 test_write(int fd) {
     struct file *f = file_descriptors[fd]->file;
     int overall_bytes = 0, block_count = 0;
-    fprintf(stderr, "All data in file:\n");
+    fprintf(stderr, "\nAll data in file '%s':\n", f->name);
 
     for (struct block *b = f->block_list; b; b = b->next, ++block_count) {
         fprintf(stderr, "\tblock %d: ", block_count);
@@ -293,7 +296,7 @@ test_write(int fd) {
 
         overall_bytes += b->occupied;
     }
-    fprintf(stderr, "Overall bytes: %d, overall blocks: %d\n", overall_bytes, block_count);
+    fprintf(stderr, "Overall bytes: %d, overall blocks: %d\n\n", overall_bytes, block_count);
 }
 */
 
@@ -339,8 +342,6 @@ ufs_write(int fd, const char *buf, size_t size)
         current_block = current_block->next;
     }
 
-    int block_count = desc->block_index;
-
     while (written_bytes < (ssize_t)size) {
         if (current_block == NULL) {
             current_block = malloc(sizeof(*current_block));
@@ -378,6 +379,11 @@ ufs_write(int fd, const char *buf, size_t size)
             desc->byte_index = 0;
             current_block->occupied = BLOCK_SIZE;
         } else if (current_block->occupied < desc->byte_index) {
+            /*
+             * in this case, the data in the block has become larger,
+             * otherwise some of the data has simply been overwritten
+             * and no update is needed
+            */
             current_block->occupied = desc->byte_index;
         }
 
@@ -386,7 +392,6 @@ ufs_write(int fd, const char *buf, size_t size)
         written_bytes += block_capacity;
         prev_block = current_block;
         current_block = current_block->next;
-        ++block_count;
     }
 
     return written_bytes;
@@ -469,13 +474,11 @@ ufs_close(int fd)
         code = -1;
     }
 
-    /*
     if (file_descriptor_count == 0) {
         free(file_descriptors);
         file_descriptors = NULL;
         file_descriptor_capacity = 0;
     }
-    */
 
     return code;
 }
