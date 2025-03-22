@@ -266,15 +266,12 @@ get_occupied_memory(const struct file *f, int block, int byte) {
 
     for (
         struct block *b = f->block_list;
-        b != NULL && current_block <= block;
+        b != NULL && current_block < block;
         b = b->next, ++current_block
     ) {
-        if (current_block == block) {
-            occupied += byte;
-        } else {
-            occupied += b->occupied;
-        }
+        occupied += b->occupied;
     }
+    occupied += byte;
 
     return occupied;
 }
