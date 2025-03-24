@@ -286,6 +286,7 @@ get_occupied_memory(const struct file *f, int block, int byte) {
     return occupied;
 }
 
+/* static function for debug ufs_write */
 /*
 static void
 test_write(int fd) {
@@ -302,52 +303,11 @@ test_write(int fd) {
         fprintf(stderr, "\n");
 
         overall_bytes += b->occupied;
-    }
-    fprintf(stderr, "Overall bytes: %d, overall blocks: %d\n\n", overall_bytes, block_count);
-}
-*/
-
-/*
- * Bring block pointers of the file and file descriptor info up to date.
- * Returns a pointer to the block being tracked by the descriptor.
-*/
-/*
-struct block *
-update_descriptor_info(struct filedesc *desc) {
-    if (desc == NULL || desc->file == NULL) {
-        return NULL;
-    }
-
-    struct block *current_block = desc->file->block_list;
-    struct block *descriptor_block = current_block;
-
-    for (
-        int i = 0;
-        current_block != NULL;
-        current_block = current_block->next, ++i
-    ) {
-        desc->file->last_block = current_block;
-        descriptor_block = current_block;
-
-        if (
-            current_block->next == NULL &&
-            desc->block_index > i
-        ) {
-            // block_index is outdated
-            desc->block_index = i;
+        if (block_count > 10) {
+            fprintf(stderr, "\ttoo many blocks, break\n");
         }
     }
-
-    if (descriptor_block == NULL) {
-        // file is empty
-        desc->block_index = 0;
-        desc->byte_index = 0;
-    } else if (descriptor_block->occupied < desc->byte_index) {
-        // byte_index is outdated
-        desc->byte_index = descriptor_block->occupied;
-    }
-
-    return descriptor_block;
+    fprintf(stderr, "Overall bytes: %d, overall blocks: %d\n\n", overall_bytes, block_count);
 }
 */
 
@@ -384,10 +344,12 @@ ufs_write(int fd, const char *buf, size_t size)
     struct block *current_block = f->block_list;
     struct block *prev_block = NULL;
 
-    for (int i = 0; i < desc->block_index; ++i) {
-        if (current_block == NULL) {
-            desc->block_index = i;
-            f->last_block = prev_block;
+    for (int block_index = 0; block_index < desc->block_index; ++block_index) {
+        if (current_block == NULL || current_block->next == NULL) {
+            desc->block_index = block_index;
+            desc->byte_index = (current_block != NULL) ? current_block->occupied : 0;
+
+            f->last_block = (current_block != NULL) ? current_block : prev_block;
             break;
         }
 
@@ -591,9 +553,12 @@ ufs_resize(int fd, size_t new_size)
     size_t current_size = 0;
     int need_free = 0;
 
+    int block_index = 0;
+
     for (
         struct block *b = f->block_list;
         b != NULL;
+        ++block_index
     ) {
         current_size += b->occupied;
         struct block *next = b->next;
@@ -601,14 +566,10 @@ ufs_resize(int fd, size_t new_size)
         if (need_free == 0 && current_size >= new_size) {
             if (b->memory == NULL) {
                 b->memory = malloc(BLOCK_SIZE);
+                memset(b->memory, 0, BLOCK_SIZE);
             }
 
-            size_t new_block_size = current_size - b->occupied;
-            if (new_block_size < new_size) {
-                new_block_size = new_size;
-            } else {
-                new_block_size -= new_size;
-            }
+            size_t new_block_size = new_size - (current_size - b->occupied);
 
             if (BLOCK_SIZE - new_block_size > 0) {
                 memset(b->memory + new_block_size, 0, BLOCK_SIZE - new_block_size);
@@ -617,10 +578,10 @@ ufs_resize(int fd, size_t new_size)
             b->occupied = new_block_size;
             b->next = NULL;
             f->last_block = b;
-            need_free = 1;
-        }
 
-        if (need_free == 1) {
+            need_free = 1;
+
+        } else if (need_free == 1) {
             if (b->prev != NULL) {
                 b->prev->next = NULL;
             }
