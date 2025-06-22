@@ -196,19 +196,19 @@ worker_thread(void *arg)
                 pool->task_tail = NULL;
             }
             pool->queued_tasks--;
-            task->next = NULL;
-            task->prev = NULL;
             pool->running_tasks++;
-        }
-        pthread_mutex_unlock(&pool->mutex);
+            pthread_mutex_unlock(&pool->mutex);
 
-        if (task) {
             pthread_mutex_lock(&task->mutex);
             task->is_running = true;
             task->is_pushed = false;
             pthread_mutex_unlock(&task->mutex);
 
             void *res = task->function(task->arg);
+
+            pthread_mutex_lock(&pool->mutex);
+            pool->running_tasks--;
+            pthread_mutex_unlock(&pool->mutex);
 
             pthread_mutex_lock(&task->mutex);
             task->result = res;
@@ -218,15 +218,13 @@ worker_thread(void *arg)
             bool is_detached = task->is_detached;
             pthread_mutex_unlock(&task->mutex);
 
-            pthread_mutex_lock(&pool->mutex);
-            pool->running_tasks--;
-            pthread_mutex_unlock(&pool->mutex);
-
             if (is_detached) {
                 pthread_mutex_destroy(&task->mutex);
                 pthread_cond_destroy(&task->cond);
                 free(task);
             }
+        } else {
+            pthread_mutex_unlock(&pool->mutex);
         }
     }
 
@@ -308,7 +306,7 @@ thread_task_timed_join(struct thread_task *task, double timeout, void **result)
     }
 
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    clock_gettime(CLOCK_REALTIME, &ts);
     time_t sec = (time_t) timeout;
     long nsec = (long) ((timeout - (double) sec) * 1000000000L);
     ts.tv_sec += sec;
